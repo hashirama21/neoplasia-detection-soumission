@@ -12,18 +12,19 @@ on:
 
 env:
   IMAGE_NAME: neoplasia-detection
+  LOCAL_TAG: neoplasia-detection:ci
 
 jobs:
-  build-and-push:
+  build-test-push:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 90
 
     steps:
-      # ── Checkout
+      # ── Checkout ─────────────────────────────────────────────────────────────
       - name: Checkout
         uses: actions/checkout@v4
 
-      # ── Python setup
+      # ── Python ───────────────────────────────────────────────────────────────
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -32,7 +33,7 @@ jobs:
       - name: Install gdown
         run: pip install --quiet gdown
 
-      # ── Cache weights (avoids re-downloading 1.75 GB on every run)
+      # ── Cache weights (1.75 GB — avoid re-downloading on every run) ──────────
       - name: Cache model weights
         uses: actions/cache@v4
         id: cache-weights
@@ -40,7 +41,6 @@ jobs:
           path: outputs_extracted/
           key: weights-gdrive-${{ secrets.GDRIVE_FILE_ID }}
 
-      # ── Download weights (only on cache miss)
       - name: Download weights from Google Drive
         if: steps.cache-weights.outputs.cache-hit != 'true'
         run: |
@@ -49,34 +49,81 @@ jobs:
           unzip -q -o outputs.zip -d outputs_extracted
           rm outputs.zip
 
-      # ── Populate resources/
-      - name: Set up resources/
+      - name: Populate resources/
         run: python scripts/setup_resources.py --extracted_dir outputs_extracted
 
       - name: Verify resources
         run: |
-          echo "=== resources/ ==="
+          echo "=== Checkpoints ==="
           ls -lh resources/*.pt
+          echo "=== Calibration ==="
           ls -lh resources/calibration/
+          echo "=== Threshold ==="
+          python -c "import json; d=json.load(open('resources/calibration/calibration_results.json')); print(f'threshold: {d[\"optimal_threshold\"]}')"
 
-      # ── Docker setup ────────────────────────────────────────────────────────
+      # ── Docker buildx ─────────────────────────────────────────────────────────
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
+      # ── Build local image for offline test ───────────────────────────────────
+      - name: Build Docker image (local)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          push: false
+          load: true
+          tags: ${{ env.LOCAL_TAG }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # ── Offline test (mirrors Grand Challenge --network none) ─────────────────
+      - name: Prepare test output directory
+        run: mkdir -p /tmp/gc-test-output
+
+      - name: Run offline inference test (--network none)
+        run: |
+          docker run --rm \
+            --platform linux/amd64 \
+            --network none \
+            --volume "${{ github.workspace }}/test/input/interface_0":/input:ro \
+            --volume /tmp/gc-test-output:/output \
+            ${{ env.LOCAL_TAG }}
+
+      - name: Verify test output
+        run: |
+          OUTPUT="/tmp/gc-test-output/stacked-neoplastic-lesion-likelihoods.json"
+          if [ ! -f "$OUTPUT" ]; then
+            echo "ERROR: output file not found — inference failed"
+            exit 1
+          fi
+          echo "=== Inference output ==="
+          cat "$OUTPUT"
+          python -c "
+          import json, sys
+          data = json.load(open('$OUTPUT'))
+          assert isinstance(data, list), 'Output must be a JSON array'
+          assert all(isinstance(v, float) for v in data), 'All values must be floats'
+          assert all(0.0 <= v <= 1.0 for v in data), 'Values must be in [0,1]'
+          print(f'Offline test PASSED — {len(data)} likelihood(s), values: {data}')
+          "
+
+      # ── Push to Harbor (only after offline test passes) ───────────────────────
       - name: Login to Harbor registry
+        if: github.event_name == 'push' || inputs.push_image == true
         uses: docker/login-action@v3
         with:
           registry: ${{ secrets.HARBOR_REGISTRY }}
           username: ${{ secrets.HARBOR_USERNAME }}
           password: ${{ secrets.HARBOR_PASSWORD }}
 
-      # ── Build & Push
-      - name: Build and push Docker image
+      - name: Build and push to Harbor
+        if: github.event_name == 'push' || inputs.push_image == true
         uses: docker/build-push-action@v6
         with:
           context: .
           platforms: linux/amd64
-          push: ${{ github.event_name == 'push' || inputs.push_image == true }}
+          push: true
           tags: |
             ${{ secrets.HARBOR_REGISTRY }}/${{ secrets.HARBOR_PROJECT }}/${{ env.IMAGE_NAME }}:latest
             ${{ secrets.HARBOR_REGISTRY }}/${{ secrets.HARBOR_PROJECT }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
@@ -87,9 +134,13 @@ jobs:
             org.opencontainers.image.description=RARE26 Barrett Neoplasia Detection — DINOv2+LoRA 5-model ensemble
             org.opencontainers.image.revision=${{ github.sha }}
 
-      # ── Summary
-      - name: Print image digest
+      # ── Summary ───────────────────────────────────────────────────────────────
+      - name: Summary
+        if: always()
         run: |
-          echo "Image pushed:"
-          echo "  ${{ secrets.HARBOR_REGISTRY }}/${{ secrets.HARBOR_PROJECT }}/${{ env.IMAGE_NAME }}:latest"
-          echo "  ${{ secrets.HARBOR_REGISTRY }}/${{ secrets.HARBOR_PROJECT }}/${{ env.IMAGE_NAME }}:${{ github.sha }}"
+          echo "## Build Summary" >> $GITHUB_STEP_SUMMARY
+          echo "- Commit: \`${{ github.sha }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- Offline test: ${{ job.status }}" >> $GITHUB_STEP_SUMMARY
+          if [ "${{ github.event_name }}" == "push" ] || [ "${{ inputs.push_image }}" == "true" ]; then
+            echo "- Pushed: \`${{ secrets.HARBOR_REGISTRY }}/${{ secrets.HARBOR_PROJECT }}/${{ env.IMAGE_NAME }}:latest\`" >> $GITHUB_STEP_SUMMARY
+          fi
