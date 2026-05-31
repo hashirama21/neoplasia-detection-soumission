@@ -69,7 +69,9 @@ jobs:
           cache-to: type=gha,mode=max
 
       - name: Prepare test output directory
-        run: mkdir -p /tmp/gc-test-output
+        run: |
+          mkdir -p /tmp/gc-test-output
+          chmod -R o+rwX /tmp/gc-test-output
 
       - name: Run offline inference test (--network none)
         run: |
