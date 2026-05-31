@@ -1,11 +1,8 @@
 #!/usr/bin/env bash
-
-# Stop at first error
 set -e
 
 SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
-DOCKER_IMAGE_TAG="example-algorithm-closed-testing-phase"
-
+DOCKER_IMAGE_TAG="rare26-algorithm"
 DOCKER_NOOP_VOLUME="${DOCKER_IMAGE_TAG}-volume"
 
 INPUT_DIR="${SCRIPT_DIR}/test/input"
@@ -15,9 +12,7 @@ echo "=+= (Re)build the container"
 source "${SCRIPT_DIR}/do_build.sh"
 
 cleanup() {
-    echo "=+= Cleaning permissions ..."
-    # Ensure permissions are set correctly on the output
-    # This allows the host user (e.g. you) to access and handle these files
+    echo "=+= Cleaning permissions..."
     docker run --rm \
       --platform=linux/amd64 \
       --quiet \
@@ -25,67 +20,42 @@ cleanup() {
       --entrypoint /bin/sh \
       $DOCKER_IMAGE_TAG \
       -c "chmod -R -f o+rwX /output/* || true"
-
-    # Ensure volume is removed
-    docker volume rm "$DOCKER_NOOP_VOLUME" > /dev/null
+    docker volume rm "$DOCKER_NOOP_VOLUME" > /dev/null 2>&1 || true
 }
 
-# This allows for the Docker user to read
-chmod -R -f o+rX "$INPUT_DIR" "${SCRIPT_DIR}/model"
-
+chmod -R -f o+rX "$INPUT_DIR"
 
 if [ -d "${OUTPUT_DIR}/interface_0" ]; then
-  # This allows for the Docker user to write
-  chmod -f o+rwX "${OUTPUT_DIR}/interface_0"
-
-  echo "=+= Cleaning up any earlier output"
-  # Use the container itself to circumvent ownership problems
-  docker run --rm \
-      --platform=linux/amd64 \
-      --quiet \
-      --volume "${OUTPUT_DIR}/interface_0":/output \
-      --entrypoint /bin/sh \
-      $DOCKER_IMAGE_TAG \
-      -c "rm -rf /output/* || true"
-else
-  mkdir -p -m o+rwX "${OUTPUT_DIR}/interface_0"
-fi
-
-
-docker volume create "$DOCKER_NOOP_VOLUME" > /dev/null
-
-trap cleanup EXIT
-
-run_docker_forward_pass() {
-    local interface_dir="$1"
-
-    echo "=+= Doing a forward pass on ${interface_dir}"
-
-    ## Note the extra arguments that are passed here:
-    # '--network none'
-    #    entails there is no internet connection
-    # 'gpus all'
-    #    enables access to any GPUs present
-    # '--volume <NAME>:/tmp'
-    #   is added because on Grand Challenge this directory cannot be used to store permanent files
-    # '-volume ../model:/opt/ml/model/":ro'
-    #   is added to provide access to the (optional) tarball-upload locally
+    chmod -f o+rwX "${OUTPUT_DIR}/interface_0"
+    echo "=+= Cleaning up earlier output"
     docker run --rm \
         --platform=linux/amd64 \
-        --network none \
-        --gpus all \
-        --volume "${INPUT_DIR}/${interface_dir}":/input:ro \
-        --volume "${OUTPUT_DIR}/${interface_dir}":/output \
-        --volume "$DOCKER_NOOP_VOLUME":/tmp \
-        --volume "${SCRIPT_DIR}/model":/opt/ml/models:ro \
-        "$DOCKER_IMAGE_TAG"
+        --quiet \
+        --volume "${OUTPUT_DIR}/interface_0":/output \
+        --entrypoint /bin/sh \
+        $DOCKER_IMAGE_TAG \
+        -c "rm -rf /output/* || true"
+else
+    mkdir -p -m o+rwX "${OUTPUT_DIR}/interface_0"
+fi
 
-  echo "=+= Wrote results to ${OUTPUT_DIR}/${interface_dir}"
-}
+docker volume create "$DOCKER_NOOP_VOLUME" > /dev/null
+trap cleanup EXIT
 
+echo "=+= Running forward pass on interface_0..."
+docker run --rm \
+    --platform=linux/amd64 \
+    --network none \
+    --gpus all \
+    --volume "${INPUT_DIR}/interface_0":/input:ro \
+    --volume "${OUTPUT_DIR}/interface_0":/output \
+    --volume "$DOCKER_NOOP_VOLUME":/tmp \
+    "$DOCKER_IMAGE_TAG"
 
-run_docker_forward_pass "interface_0"
+echo ""
+echo "=+= Output:"
+cat "${OUTPUT_DIR}/interface_0/stacked-neoplastic-lesion-likelihoods.json" 2>/dev/null \
+    || echo "WARNING: output file not found"
 
-
-
+echo ""
 echo "=+= Save this image for uploading via ./do_save.sh"

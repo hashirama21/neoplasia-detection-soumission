@@ -1,0 +1,21 @@
+# Model weights — copy via resources/SETUP.md, never commit
+resources/*.pt
+resources/calibration/*.pkl
+
+# Docker exports
+*.tar.gz
+
+# Test outputs
+test/output/
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# IDE
+.idea/
+.vscode/
+
+# OS
+.DS_Store
