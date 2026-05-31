@@ -40,19 +40,19 @@ logging.basicConfig(
 log = logging.getLogger(__name__)
 
 
-def load_json(location: Path) -> dict | list:
-    with open(location) as f:
+def _load_json(path: Path) -> dict | list:
+    with open(path) as f:
         return json.load(f)
 
 
-def write_json(location: Path, content) -> None:
-    location.parent.mkdir(parents=True, exist_ok=True)
-    with open(location, "w") as f:
+def _write_json(path: Path, content) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w") as f:
         json.dump(content, f, indent=4)
 
 
 def get_interface_key() -> tuple[str, ...]:
-    inputs = load_json(INPUT_PATH / "inputs.json")
+    inputs = _load_json(INPUT_PATH / "inputs.json")
     return tuple(sorted(sv["interface"]["slug"] for sv in inputs))
 
 
@@ -64,18 +64,14 @@ def load_stacked_tiff(location: Path) -> list[np.ndarray]:
 
     arr = SimpleITK.GetArrayFromImage(SimpleITK.ReadImage(files[0]))
 
-    frames: list[np.ndarray] = []
-    if arr.ndim == 2:                          # single grayscale frame
+    if arr.ndim == 2:
         frames = [np.stack([arr, arr, arr], axis=-1)]
-    elif arr.ndim == 3 and arr.shape[-1] in (3, 4):   # single RGB/RGBA
+    elif arr.ndim == 3 and arr.shape[-1] in (3, 4):
         frames = [arr[..., :3]]
-    elif arr.ndim == 3:                        # (N, H, W) grayscale stack
-        for i in range(arr.shape[0]):
-            f = arr[i]
-            frames.append(np.stack([f, f, f], axis=-1))
-    elif arr.ndim == 4:                        # (N, H, W, C) RGB stack
-        for i in range(arr.shape[0]):
-            frames.append(arr[i, ..., :3])
+    elif arr.ndim == 3:
+        frames = [np.stack([arr[i], arr[i], arr[i]], axis=-1) for i in range(arr.shape[0])]
+    elif arr.ndim == 4:
+        frames = [arr[i, ..., :3] for i in range(arr.shape[0])]
     else:
         raise ValueError(f"Unexpected TIFF shape: {arr.shape}")
 
@@ -83,9 +79,11 @@ def load_stacked_tiff(location: Path) -> list[np.ndarray]:
     for f in frames:
         if f.dtype != np.uint8:
             lo, hi = float(f.min()), float(f.max())
-            f = ((f - lo) / (hi - lo + 1e-8) * 255).astype(np.uint8) if hi > lo else np.zeros_like(f, dtype=np.uint8)
+            f = ((f - lo) / (hi - lo + 1e-8) * 255).astype(np.uint8) if hi > lo \
+                else np.zeros_like(f, dtype=np.uint8)
         result.append(f)
     return result
+
 
 def build_val_transform(img_size: int = 392, resize_size: int = 448) -> T.Compose:
     return T.Compose([
@@ -124,7 +122,6 @@ def load_ensemble(device: torch.device) -> list:
 
 
 def load_calibrator():
-    sys.path.insert(0, str(Path(__file__).parent))
     from src.calibration.calibrator import IsotonicCalibrator
 
     path = RESOURCE_PATH / "calibration" / "isotonic_calibrator.pkl"
@@ -139,10 +136,10 @@ def load_calibrator():
 def load_threshold() -> float:
     path = RESOURCE_PATH / "calibration" / "calibration_results.json"
     if path.exists():
-        t = float(load_json(path).get("optimal_threshold", 0.5))
-        log.info("Threshold: %.4f", t)
+        t = float(_load_json(path).get("optimal_threshold", 0.5))
+        log.info("Threshold loaded from calibration_results.json: %.4f", t)
         return t
-    log.warning("calibration_results.json not found — using 0.5.")
+    log.warning("calibration_results.json not found — using 0.5")
     return 0.5
 
 
@@ -172,7 +169,6 @@ def ensemble_tta_predict(
     return float(np.mean(all_logits))
 
 
-
 def interface_0_handler() -> int:
     device    = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     log.info("Device: %s", device)
@@ -195,7 +191,7 @@ def interface_0_handler() -> int:
         log.info("Frame %d/%d  raw=%.4f  cal=%.4f  pred=%d",
                  i + 1, len(frames), raw_prob, cal_prob, int(cal_prob >= threshold))
 
-    write_json(OUTPUT_PATH / "stacked-neoplastic-lesion-likelihoods.json", likelihoods)
+    _write_json(OUTPUT_PATH / "stacked-neoplastic-lesion-likelihoods.json", likelihoods)
 
     n_pos = sum(p >= threshold for p in likelihoods)
     log.info("Done — %d/%d frame(s) neoplastic (thr=%.4f)", n_pos, len(frames), threshold)
