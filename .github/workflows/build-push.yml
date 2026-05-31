@@ -19,11 +19,11 @@ jobs:
     timeout-minutes: 60
 
     steps:
-      # ── Checkout ───────────────────────────────────────────────────────────
+      # ── Checkout
       - name: Checkout
         uses: actions/checkout@v4
 
-      # ── Python setup ───────────────────────────────────────────────────────
+      # ── Python setup
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -32,7 +32,7 @@ jobs:
       - name: Install gdown
         run: pip install --quiet gdown
 
-      # ── Cache weights (avoids re-downloading 1.75 GB on every run) ─────────
+      # ── Cache weights (avoids re-downloading 1.75 GB on every run)
       - name: Cache model weights
         uses: actions/cache@v4
         id: cache-weights
@@ -40,7 +40,7 @@ jobs:
           path: outputs_extracted/
           key: weights-gdrive-${{ secrets.GDRIVE_FILE_ID }}
 
-      # ── Download weights (only on cache miss) ──────────────────────────────
+      # ── Download weights (only on cache miss)
       - name: Download weights from Google Drive
         if: steps.cache-weights.outputs.cache-hit != 'true'
         run: |
@@ -49,7 +49,7 @@ jobs:
           unzip -q -o outputs.zip -d outputs_extracted
           rm outputs.zip
 
-      # ── Populate resources/ ────────────────────────────────────────────────
+      # ── Populate resources/
       - name: Set up resources/
         run: python scripts/setup_resources.py --extracted_dir outputs_extracted
 
@@ -70,7 +70,7 @@ jobs:
           username: ${{ secrets.HARBOR_USERNAME }}
           password: ${{ secrets.HARBOR_PASSWORD }}
 
-      # ── Build & Push ────────────────────────────────────────────────────────
+      # ── Build & Push
       - name: Build and push Docker image
         uses: docker/build-push-action@v6
         with:
@@ -87,7 +87,7 @@ jobs:
             org.opencontainers.image.description=RARE26 Barrett Neoplasia Detection — DINOv2+LoRA 5-model ensemble
             org.opencontainers.image.revision=${{ github.sha }}
 
-      # ── Summary ─────────────────────────────────────────────────────────────
+      # ── Summary
       - name: Print image digest
         run: |
           echo "Image pushed:"
